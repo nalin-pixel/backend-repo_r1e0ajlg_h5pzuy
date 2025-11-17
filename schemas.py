@@ -1,48 +1,39 @@
 """
-Database Schemas
+Database Schemas for EduSense
 
-Define your MongoDB collection schemas here using Pydantic models.
-These schemas are used for data validation in your application.
-
-Each Pydantic model represents a collection in your database.
-Model name is converted to lowercase for the collection name:
-- User -> "user" collection
-- Product -> "product" collection
-- BlogPost -> "blogs" collection
+Each Pydantic model maps to a MongoDB collection (lowercased class name).
 """
-
 from pydantic import BaseModel, Field
-from typing import Optional
-
-# Example schemas (replace with your own):
+from typing import Optional, List
 
 class User(BaseModel):
-    """
-    Users collection schema
-    Collection name: "user" (lowercase of class name)
-    """
     name: str = Field(..., description="Full name")
     email: str = Field(..., description="Email address")
-    address: str = Field(..., description="Address")
-    age: Optional[int] = Field(None, ge=0, le=120, description="Age in years")
-    is_active: bool = Field(True, description="Whether user is active")
+    password_hash: str = Field(..., description="Hashed password")
+    avatar_url: Optional[str] = Field(None)
 
-class Product(BaseModel):
-    """
-    Products collection schema
-    Collection name: "product" (lowercase of class name)
-    """
-    title: str = Field(..., description="Product title")
-    description: Optional[str] = Field(None, description="Product description")
-    price: float = Field(..., ge=0, description="Price in dollars")
-    category: str = Field(..., description="Product category")
-    in_stock: bool = Field(True, description="Whether product is in stock")
+class Material(BaseModel):
+    user_id: str = Field(...)
+    title: str = Field(...)
+    subject: Optional[str] = Field(None)
+    content: str = Field(..., description="Raw text content of study material")
+    difficulty: str = Field("normal", description="easy|normal|hard")
 
-# Add your own schemas here:
-# --------------------------------------------------
+class Video(BaseModel):
+    user_id: str = Field(...)
+    title: str = Field(...)
+    subject: Optional[str] = Field(None)
+    url: str = Field(..., description="Video URL (e.g., YouTube)")
 
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+class EmotionLog(BaseModel):
+    user_id: str
+    emotion: str = Field(..., description="happy|sad|angry|confused|neutral")
+    note: Optional[str] = None
+
+class ChatMessage(BaseModel):
+    user_id: str
+    role: str = Field(..., description="user|assistant")
+    content: str
+    emotion_context: Optional[str] = None
+
+# The viewer may read these via /schema
