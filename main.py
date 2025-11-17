@@ -9,6 +9,16 @@ from hashlib import sha256
 
 from database import db, create_document, get_documents
 
+# LLM client (optional, falls back if not configured)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai_client = None
+try:
+    if OPENAI_API_KEY:
+        from openai import OpenAI
+        openai_client = OpenAI()
+except Exception:
+    openai_client = None
+
 app = FastAPI(title="EduSense API")
 
 app.add_middleware(
@@ -32,6 +42,21 @@ def to_public(doc):
     if "_id" in d:
         d["id"] = str(d.pop("_id"))
     return d
+
+
+def get_recent_chat_history(user_id: str, limit: int = 8):
+    try:
+        cursor = db["chatmessage"].find({"user_id": user_id}).sort("created_at", -1).limit(limit)
+        items = list(cursor)
+        items.reverse()  # oldest first for chat completion
+        history = []
+        for it in items:
+            role = it.get("role", "user")
+            content = it.get("content", "")
+            history.append({"role": role, "content": content})
+        return history
+    except Exception:
+        return []
 
 
 # ------------------- Auth -------------------
@@ -171,26 +196,65 @@ async def adapt_content(payload: AdaptRequest):
 
     return response
 
-# ------------------- Chatbot stub -------------------
+# ------------------- Chatbot (LLM-powered with graceful fallback) -------------------
 class ChatMessageIn(BaseModel):
     user_id: str
     message: str
     emotion_hint: Optional[str] = None
 
+SYSTEM_PROMPT = (
+    "You are EduSense, an emotion-aware learning assistant. "
+    "Your goal is to teach clearly and adaptively. "
+    "Tone rules by emotion: sad=gently encouraging; confused=clear step-by-step with examples; "
+    "angry=calm and concise; happy=enthusiastic and challenging; neutral=friendly and helpful. "
+    "Always be supportive, focus on pedagogy (Socratic questions, bite-sized steps), and avoid long tangents."
+)
+
 @app.post("/chat")
 async def chat_with_assistant(payload: ChatMessageIn):
-    # Very simple reflective assistant that adjusts tone
-    tone_map = {
-        "sad": "gentle and encouraging",
-        "confused": "clear and step-by-step",
-        "angry": "calm and concise",
-        "happy": "enthusiastic and challenging",
-        None: "friendly and helpful"
-    }
-    tone = tone_map.get(payload.emotion_hint, tone_map[None])
-    reply = f"In a {tone} tone: I hear you said: '{payload.message}'. Let's work through this together."
-    # store chat message and reply for history
+    # store user message first
     create_document("chatmessage", {"user_id": payload.user_id, "role": "user", "content": payload.message, "emotion_context": payload.emotion_hint})
+
+    def simple_fallback() -> str:
+        tone_map = {
+            "sad": "gentle and encouraging",
+            "confused": "clear and step-by-step",
+            "angry": "calm and concise",
+            "happy": "enthusiastic and challenging",
+            None: "friendly and helpful",
+        }
+        tone = tone_map.get(payload.emotion_hint, tone_map[None])
+        return f"In a {tone} tone: I hear you said: '{payload.message}'. Let's work through this together."
+
+    reply = None
+
+    if openai_client is None:
+        reply = simple_fallback()
+    else:
+        try:
+            # Build chat history
+            history = get_recent_chat_history(payload.user_id, limit=8)
+            # Insert system + emotion instruction
+            system_prefix = SYSTEM_PROMPT
+            if payload.emotion_hint:
+                system_prefix += f" Current learner emotional state: {payload.emotion_hint}. Adjust tone accordingly."
+
+            messages = [{"role": "system", "content": system_prefix}] + history + [
+                {"role": "user", "content": payload.message}
+            ]
+
+            # Call OpenAI
+            completion = openai_client.chat.completions.create(
+                model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                messages=messages,
+                temperature=0.7,
+                max_tokens=400,
+            )
+            reply = completion.choices[0].message.content.strip()
+        except Exception as e:
+            reply = simple_fallback()
+
+    # store assistant reply
     create_document("chatmessage", {"user_id": payload.user_id, "role": "assistant", "content": reply, "emotion_context": payload.emotion_hint})
     return {"reply": reply}
 
